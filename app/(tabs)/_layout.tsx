@@ -12,10 +12,25 @@ export default function TabLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
-        headerShown: false,
-        tabBarButton: HapticTab,
-      }}>
+  headerShown: false,
+
+  tabBarStyle: {
+    backgroundColor: "#121212",
+    borderTopColor: "#222",
+    height: 70,
+    paddingBottom: 10,
+    paddingTop: 10,
+  },
+
+  tabBarActiveTintColor: "#E85D04",
+
+  tabBarInactiveTintColor: "#666",
+
+  tabBarLabelStyle: {
+    fontSize: 12,
+    fontWeight: "600",
+  },
+}}>
       <Tabs.Screen
         name="index"
         options={{
@@ -24,10 +39,16 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="explore"
+        name="tasks/index"
         options={{
-          title: 'Explore',
+          title: 'Tasks',
           tabBarIcon: ({ color }) => <IconSymbol size={28} name="paperplane.fill" color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="habits"
+        options={{
+          href: null,
         }}
       />
     </Tabs>
