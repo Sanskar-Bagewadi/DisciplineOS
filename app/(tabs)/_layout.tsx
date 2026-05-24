@@ -3,6 +3,7 @@ import React from "react";
 
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColorScheme } from "@/hooks/use-color-scheme";
+import { ListTodo } from "lucide-react-native";
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
@@ -43,15 +44,25 @@ export default function TabLayout() {
         name="tasks/index"
         options={{
           title: "Tasks",
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={28} name="paperplane.fill" color={color} />
-          ),
+          tabBarIcon: ({ color }) => <ListTodo size={28} color={color} />,
         }}
       />
 
       {/* Here on are the routes to hide on the Tab/Nav Bar */}
       <Tabs.Screen
         name="habits"
+        options={{
+          href: null,
+        }}
+      />
+      <Tabs.Screen
+        name="stats"
+        options={{
+          href: null,
+        }}
+      />
+      <Tabs.Screen
+        name="profile"
         options={{
           href: null,
         }}
