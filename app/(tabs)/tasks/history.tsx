@@ -9,7 +9,7 @@ import {
   Target,
   XCircle,
 } from "lucide-react-native";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Platform,
   Pressable,
@@ -19,7 +19,7 @@ import {
   View,
 } from "react-native";
 
-import { loadTasks } from "@/storage/storage";
+import { useTaskStore } from "@/stores/taskStore";
 import { PlannedTask } from "@/types/task";
 
 const weekDays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -128,15 +128,7 @@ const computeWeeklyStats = (days: HistoryDay[]) => {
 export default function HistoryTasksScreen() {
   const [weekOffset, setWeekOffset] = useState(0);
   const [selectedDayIndex, setSelectedDayIndex] = useState(6);
-  const [tasks, setTasks] = useState<PlannedTask[]>([]);
-
-  useEffect(() => {
-    const fetchTasks = async () => {
-      const storedTasks = await loadTasks();
-      setTasks(storedTasks as PlannedTask[]);
-    };
-    fetchTasks();
-  }, []);
+  const tasks = useTaskStore((s) => s.tasks);
 
   const weekStartDate = useMemo(() => {
     const today = new Date();

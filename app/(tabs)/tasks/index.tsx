@@ -1,12 +1,8 @@
 //import { ThemedText } from "@/components/themed-text";
 //import { ThemedView } from "@/components/themed-view";
-import {
-  loadDisciplineScore,
-  loadTasks,
-  saveDisciplineScore,
-} from "@/storage/storage";
+import { saveDisciplineScore } from "@/storage/storage";
+import { useDisciplineScoreStore } from "@/stores/disciplineScoreStore";
 import { Discipline_Socre } from "@/types/discipline_score";
-import { PlannedTask } from "@/types/task";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import {
@@ -15,7 +11,8 @@ import {
   History,
   ListChecks,
 } from "lucide-react-native";
-import { useEffect, useState } from "react";
+import type { ComponentType } from "react";
+import { useEffect } from "react";
 import {
   Dimensions,
   Pressable,
@@ -24,8 +21,20 @@ import {
   Text,
   View,
 } from "react-native";
+import { useTaskStore } from "../../../stores/taskStore";
 
-const cards = [
+type TaskCardRoute = "/tasks/history" | "/tasks/today" | "/tasks/tomorrow";
+
+type TaskCard = {
+  id: string;
+  title: string;
+  description: string;
+  icon: ComponentType<{ size: number; color: string }>;
+  route: TaskCardRoute;
+  gradientColors: [string, string];
+};
+
+const cards: TaskCard[] = [
   {
     id: "1",
     title: "Check History",
@@ -52,28 +61,40 @@ const cards = [
   },
 ];
 
+const todayDate = new Date();
+const todayString =
+  todayDate.getFullYear() +
+  "-" +
+  String(todayDate.getMonth() + 1).padStart(2, "0") +
+  "-" +
+  String(todayDate.getDate()).padStart(2, "0");
+
+function normalizeScore(score: Discipline_Socre): Discipline_Socre {
+  return {
+    score: Number(score?.score) || 0,
+    change: Number(score?.change) || 0,
+    LastUpdated: score?.LastUpdated || todayString,
+  };
+}
+
 export default function TasksScreen() {
-  const [tasks, setTasks] = useState<PlannedTask[]>([]);
-  const [disciplineScore, setDisciplineScore] = useState<Discipline_Socre>();
+  const tasks = useTaskStore((s) => s.tasks);
+  const disciplineScore = normalizeScore(
+    useDisciplineScoreStore((s) => s.disciplineScore),
+  );
+  const setDisciplineScore = useDisciplineScoreStore(
+    (s) => s.setDisciplineScore,
+  );
 
   useEffect(() => {
-    // Load tasks and discipline score when the component mounts
-    const loadData = async () => {
-      const tasks = await loadTasks();
-      const disciplineScore = await loadDisciplineScore();
-      setTasks(tasks);
-      setDisciplineScore(disciplineScore);
-    };
-
-    loadData();
-  }, []);
-
-  useEffect(() => {
-    // Save discipline score whenever it changes
-    if (disciplineScore) {
-      saveDisciplineScore(disciplineScore);
+    if (!disciplineScore) {
+      return;
     }
-  }, [disciplineScore]);
+
+    const storedScore = normalizeScore(disciplineScore);
+    setDisciplineScore(storedScore);
+    saveDisciplineScore(storedScore);
+  }, []);
 
   const completedTasks = tasks.filter((task) => task.completed).length;
   const incompleteTasks = tasks.length - completedTasks;
@@ -95,34 +116,54 @@ export default function TasksScreen() {
         : "+0.5"
     : "";
 
-  if (
-    disciplineScore &&
-    new Date(disciplineScore.LastUpdated).getDate() < new Date().getDate()
-  ) {
-    // Reset discipline score if it's from a previous day
-    let day = new Date(disciplineScore.LastUpdated).getDate() + 1;
-    while (day !== new Date().getDate()) {
-      const currentScore =
-        (tasks.filter(
-          (task) => task.completed && new Date(task.date).getDate() === day,
-        ).length /
-          tasks.filter((task) => new Date(task.date).getDate() === day)
-            .length) *
-          100 || 0;
-      if (currentScore > 80) {
-        disciplineScore.score = disciplineScore.score + 1;
-        disciplineScore.change = 1;
-      } else if (currentScore < 65) {
-        disciplineScore.score = disciplineScore.score - 1;
-        disciplineScore.change = -1;
-      } else {
-        disciplineScore.score = disciplineScore.score + 0.5;
-        disciplineScore.change = 0.5;
-      }
-      day = day + 1;
+  useEffect(() => {
+    if (!disciplineScore) {
+      return;
     }
-    disciplineScore.LastUpdated = new Date().toISOString().split("T")[0];
-  }
+
+    const lastUpdated = new Date(disciplineScore.LastUpdated);
+    const today = new Date(todayString);
+
+    if (lastUpdated >= today) {
+      return;
+    }
+
+    const nextDate = new Date(lastUpdated);
+    nextDate.setDate(nextDate.getDate());
+
+    const updatedScore = { ...disciplineScore };
+
+    while (nextDate < today) {
+      const dateKey = nextDate.toISOString().split("T")[0];
+      const dayTasks = tasks.filter(
+        (task) => task.date && task.date.startsWith(dateKey),
+      );
+
+      const completedCount = dayTasks.filter((task) => task.completed).length;
+      const dayCount = dayTasks.length;
+
+      if (dayCount > 0) {
+        const currentScore = (completedCount / dayCount) * 100;
+
+        if (currentScore > 80) {
+          updatedScore.score += 1;
+          updatedScore.change = 1;
+        } else if (currentScore < 65) {
+          updatedScore.score -= 1;
+          updatedScore.change = -1;
+        } else {
+          updatedScore.score += 0.5;
+          updatedScore.change = 0.5;
+        }
+      }
+
+      nextDate.setDate(nextDate.getDate() + 1);
+    }
+
+    updatedScore.LastUpdated = todayString;
+    setDisciplineScore(updatedScore);
+    saveDisciplineScore(updatedScore);
+  }, []);
   return (
     <ScrollView
       style={styles.container}
@@ -163,7 +204,7 @@ export default function TasksScreen() {
           style={styles.card}
           onPress={() => {
             // Handle card press, e.g., navigate to the respective screen
-            router.push(item.route as any);
+            router.push(item.route);
           }}
         >
           <LinearGradient
@@ -278,8 +319,6 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   quickStats: {
-    position: "sticky",
-    bottom: 0,
     marginTop: 32,
     padding: 16,
     borderRadius: 28,

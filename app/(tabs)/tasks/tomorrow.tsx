@@ -10,6 +10,7 @@ import {
 } from "lucide-react-native";
 import { useEffect, useState } from "react";
 import {
+  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -21,12 +22,21 @@ import {
   View,
 } from "react-native";
 
-import { loadTasks, saveTasks } from "@/storage/storage";
+import { saveTasks } from "@/storage/storage";
+import { useTaskStore } from "@/stores/taskStore";
 import { PlannedTask } from "@/types/task";
 
-const tomorrowDate = new Date();
-tomorrowDate.setDate(tomorrowDate.getDate() + 1);
-const formattedTomorrowDate = tomorrowDate.toLocaleDateString().split("T")[0];
+const tomorrowDate = () => {
+  const today = new Date();
+  return (
+    String(today.getFullYear()) +
+    "-" +
+    String(today.getMonth() + 1).padStart(2, "0") +
+    "-" +
+    String(today.getDate() + 1).padStart(2, "0")
+  );
+};
+const formattedTomorrowDate = tomorrowDate();
 
 const priorityStyles: Record<PlannedTask["priority"], any> = {
   high: {
@@ -44,6 +54,46 @@ const priorityStyles: Record<PlannedTask["priority"], any> = {
     backgroundColor: "rgba(148, 163, 184, 0.15)",
     color: "#cbd5e1",
   },
+};
+
+const TIME_HOURS = Array.from({ length: 12 }, (_, index) => `${index + 1}`);
+const TIME_MINUTES = ["00", "15", "30", "45"];
+const TIME_PERIODS = ["AM", "PM"] as const;
+
+const parseTime = (time: string) => {
+  const match = time.trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
+  if (!match) return { hour: 0, minute: 0 };
+
+  let hour = Number(match[1]);
+  const minute = Number(match[2] ?? "0");
+  const period = match[3].toLowerCase();
+
+  if (period === "pm" && hour < 12) hour += 12;
+  if (period === "am" && hour === 12) hour = 0;
+
+  return { hour, minute };
+};
+
+const formatTimeString = (hour: number, minute: number) => {
+  const normalizedHour = hour % 12 === 0 ? 12 : hour % 12;
+  const period = hour >= 12 ? "PM" : "AM";
+  return `${normalizedHour}:${minute.toString().padStart(2, "0")} ${period}`;
+};
+
+const timeToMinutes = (time: string) => {
+  const { hour, minute } = parseTime(time);
+  return hour * 60 + minute;
+};
+
+const isValidTimeOrder = (start: string, end: string) => {
+  return timeToMinutes(end) >= timeToMinutes(start);
+};
+
+const compareTasksByTime = (a: PlannedTask, b: PlannedTask) => {
+  const diff = timeToMinutes(a.time) - timeToMinutes(b.time);
+  return diff !== 0
+    ? diff
+    : timeToMinutes(a.completeBy) - timeToMinutes(b.completeBy);
 };
 
 const motivationalQuotes = [
@@ -119,14 +169,7 @@ const motivationalQuotes = [
 ];
 
 export default function TomorrowTasksScreen() {
-  const [tasks, setTasks] = useState<PlannedTask[]>([]);
-  useEffect(() => {
-    const fetchTasks = async () => {
-      const loadedTasks = await loadTasks();
-      setTasks(loadedTasks);
-    };
-    fetchTasks();
-  }, []);
+  const tasks = useTaskStore((s) => s.tasks);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newTask, setNewTask] = useState<Omit<PlannedTask, "id">>({
     title: "",
@@ -137,6 +180,55 @@ export default function TomorrowTasksScreen() {
     date: formattedTomorrowDate,
     completed: false,
   });
+  const [timePickerField, setTimePickerField] = useState<
+    "time" | "completeBy" | null
+  >(null);
+  const [pickerHour, setPickerHour] = useState("8");
+  const [pickerMinute, setPickerMinute] = useState("00");
+  const [pickerPeriod, setPickerPeriod] =
+    useState<(typeof TIME_PERIODS)[number]>("AM");
+
+  const openTimePicker = (
+    field: "time" | "completeBy",
+    currentValue: string,
+  ) => {
+    const parsed = parseTime(currentValue);
+    const hourValue = `${parsed.hour % 12 === 0 ? 12 : parsed.hour % 12}`;
+    setPickerHour(hourValue);
+    setPickerMinute(parsed.minute.toString().padStart(2, "0"));
+    setPickerPeriod(parsed.hour >= 12 ? "PM" : "AM");
+    setTimePickerField(field);
+  };
+
+  const applyPickedTime = () => {
+    if (!timePickerField) return;
+
+    let hour = Number(pickerHour);
+    if (pickerPeriod === "PM" && hour < 12) hour += 12;
+    if (pickerPeriod === "AM" && hour === 12) hour = 0;
+    const formattedTime = formatTimeString(hour, Number(pickerMinute));
+
+    setNewTask((prev) => {
+      if (timePickerField === "time") {
+        return {
+          ...prev,
+          time: formattedTime,
+          completeBy: isValidTimeOrder(formattedTime, prev.completeBy)
+            ? prev.completeBy
+            : formattedTime,
+        };
+      }
+
+      return {
+        ...prev,
+        completeBy: isValidTimeOrder(prev.time, formattedTime)
+          ? formattedTime
+          : prev.time,
+      };
+    });
+
+    setTimePickerField(null);
+  };
 
   const today = new Date().toLocaleDateString("en-CA").split("T")[0];
 
@@ -151,20 +243,28 @@ export default function TomorrowTasksScreen() {
   const estimatedScore =
     tasks.length === 0 ? 0 : Math.round((completedTasks / tasks.length) * 100);
 
-  const deleteTask = (id: string) => {
-    setTasks((current) => current.filter((task) => task.id !== id));
+  const deleteTask = useTaskStore((s) => s.deleteTask);
+  const addToStore = useTaskStore((s) => s.addTask);
+
+  const handleDeleteTask = (id: string) => {
+    deleteTask(id);
+    saveTasks(tasks);
   };
 
   const addTask = () => {
     if (!newTask.title.trim()) return;
 
-    setTasks((current) => [
-      {
-        id: Date.now().toString(),
-        ...newTask,
-      },
-      ...current,
-    ]);
+    const nextTask = {
+      ...newTask,
+      completeBy: isValidTimeOrder(newTask.time, newTask.completeBy)
+        ? newTask.completeBy
+        : newTask.time,
+      id: "",
+    };
+
+    addToStore(nextTask);
+    saveTasks(tasks);
+
     setNewTask({
       title: "",
       description: "",
@@ -232,7 +332,7 @@ export default function TomorrowTasksScreen() {
 
         {[...tasks]
           .filter((task) => task.date === formattedTomorrowDate)
-          .sort((a, b) => a.time.localeCompare(b.time))
+          .sort(compareTasksByTime)
           .map((task) => (
             <View key={task.id} style={taskStyles.taskCard}>
               <View style={taskStyles.taskRow}>
@@ -275,7 +375,7 @@ export default function TomorrowTasksScreen() {
               </View>
               <Pressable
                 style={taskStyles.deleteButton}
-                onPress={() => deleteTask(task.id)}
+                onPress={() => handleDeleteTask(task.id)}
               >
                 <Trash2 size={18} color="#f87171" />
               </Pressable>
@@ -293,139 +393,255 @@ export default function TomorrowTasksScreen() {
       <Modal visible={showAddModal} transparent animationType="fade">
         <Pressable
           style={modalStyles.modalOverlay}
-          onPress={() => setShowAddModal(false)}
+          onPress={() => {
+            setTimePickerField(null);
+            setShowAddModal(false);
+          }}
         >
-          <Pressable
-            style={modalStyles.modalContent}
-            onPress={(e) => e.stopPropagation()}
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            keyboardVerticalOffset={Platform.OS === "ios" ? 80 : 100}
+            style={modalStyles.keyboardAvoidingView}
           >
-            <View style={modalStyles.modalHeader}>
-              <Text style={modalStyles.modalTitle}>Plan New Task</Text>
-              <Pressable
-                style={modalStyles.modalClose}
-                onPress={() => setShowAddModal(false)}
-              >
-                <X size={18} color="white" />
-              </Pressable>
-            </View>
-            <Text style={modalStyles.inputLabel}>Task Title</Text>
-            <TextInput
-              value={newTask.title}
-              onChangeText={(text) =>
-                setNewTask((prev) => ({ ...prev, title: text }))
-              }
-              placeholder="What will you accomplish?"
-              placeholderTextColor="#9ca3af"
-              style={modalStyles.input}
-            />
-            <Text style={modalStyles.inputLabel}>Description</Text>
-            <TextInput
-              value={newTask.description}
-              onChangeText={(text) =>
-                setNewTask((prev) => ({ ...prev, description: text }))
-              }
-              placeholder="Add details..."
-              placeholderTextColor="#9ca3af"
-              style={modalStyles.input}
-            />
-            <View style={modalStyles.modalGrid}>
-              <View style={modalStyles.modalField}>
-                <Text style={modalStyles.inputLabel}>Time</Text>
-                <TextInput
-                  value={newTask.time}
-                  onChangeText={(text) =>
-                    setNewTask((prev) => ({ ...prev, time: text }))
-                  }
-                  placeholder="8:00 AM"
-                  placeholderTextColor="#9ca3af"
-                  style={modalStyles.input}
-                />
+            <Pressable
+              style={modalStyles.modalContent}
+              onPress={(e) => e.stopPropagation()}
+            >
+              <View style={modalStyles.modalHeader}>
+                <Text style={modalStyles.modalTitle}>Plan New Task</Text>
+                <Pressable
+                  style={modalStyles.modalClose}
+                  onPress={() => setShowAddModal(false)}
+                >
+                  <X size={18} color="white" />
+                </Pressable>
               </View>
-              <View style={modalStyles.modalField}>
-                <Text style={modalStyles.inputLabel}>Complete By</Text>
-                <TextInput
-                  value={newTask.completeBy}
-                  onChangeText={(text) =>
-                    setNewTask((prev) => ({ ...prev, completeBy: text }))
-                  }
-                  placeholder="8:30 AM"
-                  placeholderTextColor="#9ca3af"
-                  style={modalStyles.input}
-                />
-              </View>
-            </View>
-            <View style={modalStyles.modalGrid}>
-              <View style={modalStyles.modalField}>
-                {" "}
-                <Text style={modalStyles.inputLabel}>Priority</Text>
-                <View style={modalStyles.pickerWrapper}>
+              <Text style={modalStyles.inputLabel}>Task Title</Text>
+              <TextInput
+                value={newTask.title}
+                onChangeText={(text) =>
+                  setNewTask((prev) => ({ ...prev, title: text }))
+                }
+                placeholder="What will you accomplish?"
+                placeholderTextColor="#9ca3af"
+                style={modalStyles.input}
+              />
+              <Text style={modalStyles.inputLabel}>Description</Text>
+              <TextInput
+                value={newTask.description}
+                onChangeText={(text) =>
+                  setNewTask((prev) => ({ ...prev, description: text }))
+                }
+                placeholder="Add details..."
+                placeholderTextColor="#9ca3af"
+                style={modalStyles.input}
+              />
+              <View style={modalStyles.modalGrid}>
+                <View style={modalStyles.modalField}>
+                  <Text style={modalStyles.inputLabel}>Time</Text>
                   <Pressable
-                    style={[
-                      modalStyles.pickerOption,
-                      newTask.priority === "high" &&
-                        modalStyles.pickerOptionActive,
-                    ]}
-                    onPress={() =>
-                      setNewTask((prev) => ({ ...prev, priority: "high" }))
-                    }
+                    style={modalStyles.timeInput}
+                    onPress={() => openTimePicker("time", newTask.time)}
                   >
-                    <Text
-                      style={[
-                        modalStyles.pickerText,
-                        newTask.priority === "high" &&
-                          modalStyles.pickerTextActive,
-                      ]}
-                    >
-                      High
+                    <Text style={modalStyles.timeInputText}>
+                      {newTask.time}
                     </Text>
                   </Pressable>
+                </View>
+                <View style={modalStyles.modalField}>
+                  <Text style={modalStyles.inputLabel}>Complete By</Text>
                   <Pressable
-                    style={[
-                      modalStyles.pickerOption,
-                      newTask.priority === "medium" &&
-                        modalStyles.pickerOptionActive,
-                    ]}
+                    style={modalStyles.timeInput}
                     onPress={() =>
-                      setNewTask((prev) => ({ ...prev, priority: "medium" }))
+                      openTimePicker("completeBy", newTask.completeBy)
                     }
                   >
-                    <Text
-                      style={[
-                        modalStyles.pickerText,
-                        newTask.priority === "medium" &&
-                          modalStyles.pickerTextActive,
-                      ]}
-                    >
-                      Medium
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    style={[
-                      modalStyles.pickerOption,
-                      newTask.priority === "low" &&
-                        modalStyles.pickerOptionActive,
-                    ]}
-                    onPress={() =>
-                      setNewTask((prev) => ({ ...prev, priority: "low" }))
-                    }
-                  >
-                    <Text
-                      style={[
-                        modalStyles.pickerText,
-                        newTask.priority === "low" &&
-                          modalStyles.pickerTextActive,
-                      ]}
-                    >
-                      Low
+                    <Text style={modalStyles.timeInputText}>
+                      {newTask.completeBy}
                     </Text>
                   </Pressable>
                 </View>
               </View>
-            </View>
-            <TouchableOpacity style={modalStyles.modalButton} onPress={addTask}>
-              <Text style={modalStyles.modalButtonText}>Add to Tomorrow</Text>
-            </TouchableOpacity>
-          </Pressable>
+
+              {timePickerField ? (
+                <View style={modalStyles.timePickerPanel}>
+                  <Text style={modalStyles.timePickerLabel}>
+                    Select {timePickerField === "time" ? "Time" : "Complete By"}
+                  </Text>
+                  <View style={modalStyles.timePickerRow}>
+                    <View style={modalStyles.timePickerColumn}>
+                      {TIME_HOURS.map((hour) => (
+                        <Pressable
+                          key={hour}
+                          style={[
+                            modalStyles.timePickerOption,
+                            pickerHour === hour &&
+                              modalStyles.timePickerOptionActive,
+                          ]}
+                          onPress={() => setPickerHour(hour)}
+                        >
+                          <Text
+                            style={[
+                              modalStyles.timePickerOptionText,
+                              pickerHour === hour &&
+                                modalStyles.timePickerOptionTextActive,
+                            ]}
+                          >
+                            {hour}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                    <View style={modalStyles.timePickerColumn}>
+                      {TIME_MINUTES.map((minute) => (
+                        <Pressable
+                          key={minute}
+                          style={[
+                            modalStyles.timePickerOption,
+                            pickerMinute === minute &&
+                              modalStyles.timePickerOptionActive,
+                          ]}
+                          onPress={() => setPickerMinute(minute)}
+                        >
+                          <Text
+                            style={[
+                              modalStyles.timePickerOptionText,
+                              pickerMinute === minute &&
+                                modalStyles.timePickerOptionTextActive,
+                            ]}
+                          >
+                            {minute}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                    <View style={modalStyles.timePickerColumn}>
+                      {TIME_PERIODS.map((period) => (
+                        <Pressable
+                          key={period}
+                          style={[
+                            modalStyles.timePickerOption,
+                            pickerPeriod === period &&
+                              modalStyles.timePickerOptionActive,
+                          ]}
+                          onPress={() => setPickerPeriod(period)}
+                        >
+                          <Text
+                            style={[
+                              modalStyles.timePickerOptionText,
+                              pickerPeriod === period &&
+                                modalStyles.timePickerOptionTextActive,
+                            ]}
+                          >
+                            {period}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  </View>
+                  <View style={modalStyles.timePickerActions}>
+                    <Pressable
+                      style={modalStyles.timePickerButton}
+                      onPress={() => setTimePickerField(null)}
+                    >
+                      <Text style={modalStyles.timePickerButtonText}>
+                        Cancel
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      style={[
+                        modalStyles.timePickerButton,
+                        modalStyles.timePickerButtonConfirm,
+                      ]}
+                      onPress={applyPickedTime}
+                    >
+                      <Text
+                        style={[
+                          modalStyles.timePickerButtonText,
+                          modalStyles.timePickerButtonConfirmText,
+                        ]}
+                      >
+                        Set time
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
+              ) : null}
+              <View style={modalStyles.modalGrid}>
+                <View style={modalStyles.modalField}>
+                  <Text style={modalStyles.inputLabel}>Priority</Text>
+                  <View style={modalStyles.pickerWrapper}>
+                    <Pressable
+                      style={[
+                        modalStyles.pickerOption,
+                        newTask.priority === "high" &&
+                          modalStyles.pickerOptionActive,
+                      ]}
+                      onPress={() =>
+                        setNewTask((prev) => ({ ...prev, priority: "high" }))
+                      }
+                    >
+                      <Text
+                        style={[
+                          modalStyles.pickerText,
+                          newTask.priority === "high" &&
+                            modalStyles.pickerTextActive,
+                        ]}
+                      >
+                        High
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      style={[
+                        modalStyles.pickerOption,
+                        newTask.priority === "medium" &&
+                          modalStyles.pickerOptionActive,
+                      ]}
+                      onPress={() =>
+                        setNewTask((prev) => ({ ...prev, priority: "medium" }))
+                      }
+                    >
+                      <Text
+                        style={[
+                          modalStyles.pickerText,
+                          newTask.priority === "medium" &&
+                            modalStyles.pickerTextActive,
+                        ]}
+                      >
+                        Medium
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      style={[
+                        modalStyles.pickerOption,
+                        newTask.priority === "low" &&
+                          modalStyles.pickerOptionActive,
+                      ]}
+                      onPress={() =>
+                        setNewTask((prev) => ({ ...prev, priority: "low" }))
+                      }
+                    >
+                      <Text
+                        style={[
+                          modalStyles.pickerText,
+                          newTask.priority === "low" &&
+                            modalStyles.pickerTextActive,
+                        ]}
+                      >
+                        Low
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+              <TouchableOpacity
+                style={modalStyles.modalButton}
+                onPress={addTask}
+              >
+                <Text style={modalStyles.modalButtonText}>Add to Tomorrow</Text>
+              </TouchableOpacity>
+            </Pressable>
+          </KeyboardAvoidingView>
         </Pressable>
       </Modal>
     </View>
@@ -659,6 +875,10 @@ const modalStyles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.65)",
     justifyContent: "flex-end",
   },
+  keyboardAvoidingView: {
+    flex: 1,
+    justifyContent: "flex-end",
+  },
   modalContent: {
     backgroundColor: "#0f172a",
     borderTopLeftRadius: 28,
@@ -709,6 +929,91 @@ const modalStyles = StyleSheet.create({
   },
   modalField: {
     flex: 1,
+  },
+  timeInput: {
+    width: "100%",
+    backgroundColor: "#111827",
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    justifyContent: "center",
+  },
+  timeInputText: {
+    color: "white",
+    fontSize: 14,
+  },
+  timePickerPanel: {
+    backgroundColor: "#0f172a",
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(148, 163, 184, 0.2)",
+    padding: 14,
+    marginTop: 12,
+  },
+  timePickerLabel: {
+    color: "white",
+    fontSize: 13,
+    fontWeight: "700",
+    marginBottom: 10,
+  },
+  timePickerRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  timePickerColumn: {
+    flex: 1,
+  },
+  timePickerOption: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(148, 163, 184, 0.2)",
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    marginBottom: 6,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#111827",
+  },
+  timePickerOptionActive: {
+    backgroundColor: "#1f2937",
+    borderColor: "#22c55e",
+  },
+  timePickerOptionText: {
+    color: "#cbd5e1",
+    fontSize: 14,
+  },
+  timePickerOptionTextActive: {
+    color: "white",
+    fontWeight: "700",
+  },
+  timePickerActions: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 10,
+    marginTop: 10,
+  },
+  timePickerButton: {
+    flex: 1,
+    borderRadius: 16,
+    borderColor: "rgba(148, 163, 184, 0.2)",
+    borderWidth: 1,
+    paddingVertical: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#111827",
+  },
+  timePickerButtonConfirm: {
+    backgroundColor: "#22c55e",
+    borderColor: "#22c55e",
+  },
+  timePickerButtonText: {
+    color: "#cbd5e1",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  timePickerButtonConfirmText: {
+    color: "#0f172a",
   },
   pickerWrapper: {
     flexDirection: "row",
